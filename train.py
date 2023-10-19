@@ -1,8 +1,8 @@
 import sys
 import torch
 import torch.nn as nn
-from loss import MultiMarginLoss, LDAMLoss, CB_loss, CenterLoss
-from model import Vivit_backbone
+from loss import MultiMarginLoss, LDAMLoss, CB_loss, CenterLoss, kw_rank_loss
+from model import Vivit_backbone, ResnetTCN
 import copy
 from data import VivitProcessorToTensor
 from transformers import VivitImageProcessor
@@ -20,15 +20,18 @@ class MultiEngagementPredictor(nn.Module):
         cls_num_list = [labels.count(0), labels.count(1), labels.count(2), labels.count(3)]
     
         #Define Model
+        self.model_k = None
         if model_name == "Vivit":
             self.model_q= Vivit_backbone(output_dim=output_dim)
+            self.model_k= Vivit_backbone(output_dim=output_dim)
             self.image_processor = VivitImageProcessor.from_pretrained("google/vivit-b-16x2-kinetics400")
             self.processor = VivitProcessorToTensor()
+        if model_name == "ResnetTCN":
+            self.model_q = ResnetTCN(128,128,output_dim)
+            self.model_k= ResnetTCN(128,128,output_dim)
 
         #Moco
-        self.model_k = None
         if loss_type == "mocorank":
-            self.model_k= copy.deepcopy(self.model_q)
             self.model_k.eval()
 
             for param_q, param_k in zip(
@@ -44,7 +47,7 @@ class MultiEngagementPredictor(nn.Module):
             init_label = torch.tensor([0 for _ in range(queue_size//4)] + [1 for _ in range(queue_size//4)] + [2 for _ in range(queue_size//4)] + [3 for _ in range(queue_size//4)])
             self.register_buffer("queue_label", init_label[rand_index])
             self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
-            self.register_buffer("queue_lstm", torch.zeros((queue_size,768), dtype=torch.float)) #*
+            self.register_buffer("queue_lstm", torch.zeros((queue_size,128), dtype=torch.float)) #*
             self.queue[0] = self.queue[0][rand_index]
 
             #Loss
@@ -66,13 +69,12 @@ class MultiEngagementPredictor(nn.Module):
             per_cls_weights = torch.FloatTensor(per_cls_weights).to(CUDA)
             self.criterion = LDAMLoss(cls_num_list=cls_num_list, max_m=0.5, s=30, weight=None, cuda = CUDA).to(CUDA)
         
-
         if second_loss_type == "rankloss":
-            self.second_criterion = None
+            self.second_criterion = kw_rank_loss()
         elif second_loss_type == "triplet":
-            self.second_criterion = None
+            self.second_criterion = nn.TripletMarginWithDistanceLoss(margin=1)
         elif second_loss_type == "centerloss":
-            self.second_criterion = None
+            self.second_criterion = CenterLoss(4, 128, CUDA)
 
     def forward(self,x):
         pred_q, feat_q = self.model_q(x)
@@ -85,13 +87,14 @@ class MultiEngagementPredictor(nn.Module):
         return pred_q, feat_q, pred_k, feat_k
   
     def training_step(self, x, label, video):
-        x = x.to(self.CUDA)
         anchor_label = label.to(self.CUDA)
 
         if self.model_name == "Vivit":
             v_tensor = [self.processor(v) for v in video]
             inputs = self.image_processor(v_tensor, return_tensors="pt")
             inputs['pixel_values'] = inputs['pixel_values'].to(self.CUDA)
+        else:
+            x = x.to(self.CUDA)
 
         #update key model (normal moco)
         if self.loss_type == "mocorank":
@@ -108,7 +111,7 @@ class MultiEngagementPredictor(nn.Module):
             loss = self.criterion_multimargin(self.queue, self.queue_label, self.queue_lstm, pred_q, anchor_label, feat_q) #*
             self._dequeue_and_enqueue_queue(pred_k,feat_k,anchor_label) #*
         elif self.loss_type == "mse":
-            scaled_label = (anchor_label/3)-0.75 #[-0.75, -0.25, 0.25, 0.75]
+            scaled_label = (anchor_label/2)-0.75 #[-0.75, -0.25, 0.25, 0.75]
             loss = self.criterion(pred_q, scaled_label.unsqueeze(dim=1))
         elif self.loss_type in ["ldam", "cbloss_focal", "cbloss_ce", "ce"]:
             loss = self.criterion(pred_q, anchor_label)
@@ -133,12 +136,12 @@ class MultiEngagementPredictor(nn.Module):
         return loss, loss_add
   
     def validation_step(self, x, label, video):
-        x = x.to(self.CUDA)
-        
         if self.model_name == "Vivit":
             v_tensor = [self.processor(v) for v in video]
             inputs = self.image_processor(v_tensor, return_tensors="pt")
             inputs['pixel_values'] = inputs['pixel_values'].to(self.CUDA)
+        else:
+            x = x.to(self.CUDA)
 
         #forward
         if self.model_name == "Vivit":

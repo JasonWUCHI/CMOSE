@@ -108,7 +108,7 @@ class VivitProcessorToTensor(object):
         
         container = av.open(path)
 
-        if container.streams.video[0].frames < 160:
+        if container.streams.video[0].frames <= 160:
             startidx = np.random.randint(0, 4)
             indices = range(startidx,container.streams.video[0].frames,5)
         else:
@@ -143,17 +143,23 @@ class VideoDataset(Dataset):
 
         if self.transform != None:
             video_tensor = self.transform(video)
+        else:
+            video_tensor = video
 
         return video_tensor, video, label
 
     def get_labels(self):
         return self.label
 
-def get_dataloader(batch_size, label_df, root, model=""):
+def get_dataloader(batch_size, label_df, root, sampler):
     dataloaders = []
     for case in ['Train', 'Validation', 'Test']:
         dataset = VideoDataset(root, label_df[label_df['Split']==case], transform=torchvision.transforms.Compose([VideoFolderPathToTensor()]))
-        dataloader = DataLoader(dataset=dataset, batch_size=batch_size, sampler=ImbalancedDatasetSampler(dataset), num_workers=4)
+        #dataset = VideoDataset(root, label_df[label_df['Split']==case])
+        if case == 'Train' and sampler:
+            dataloader = DataLoader(dataset=dataset, batch_size=batch_size, sampler=ImbalancedDatasetSampler(dataset), num_workers=16)
+        else:
+            dataloader = DataLoader(dataset=dataset, batch_size=batch_size, shuffle=True, num_workers=8)
         dataloaders.append(dataloader)
 
     return dataloaders
