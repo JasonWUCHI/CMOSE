@@ -1,7 +1,7 @@
 # CMOSE: Comprehensive Multi-Modality Online Student Engagement Dataset with High-Quality Labels
 
 ## Update 
-- Project page release [here](https://jasonwuchi.github.io/otr_project_page/project.html)
+- Project page release [here](https://jasonwuchi.github.io/CMOSE/)
 - Dataset release [here](https://huggingface.co/datasets/cwuau/CMOSE)
 
 ## Abstract
